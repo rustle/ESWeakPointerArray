@@ -28,12 +28,13 @@
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
 #import "ESWeakPointerArray.h"
+#import "ESWeakObjectWatcher.h"
 
 #define uid __unsafe_unretained id
 
 // Cast redeclaration of weak api
-id objc_loadWeak(uid *location);
-id objc_storeWeak(uid *location, uid obj);
+extern id objc_loadWeak(uid *location);
+extern id objc_storeWeak(uid *location, uid obj);
 
 // This is basically objc_moveWeak, which is documented in the LLVM ARC docs, but isn't public for some reason.
 // It differs in that it makes sure from is zeroed after the move.
@@ -51,6 +52,10 @@ void es_moveWeak(uid *to, uid *from)
 #define ValidateRange(index) \
 if (index >= self->_count) \
 	[NSException raise:NSRangeException format:@"index %ld beyond count %lu", index, self->_count];
+
+@interface ESWeakPointerArray () <ESWeakObjectWatcherDelegate>
+
+@end
 
 @implementation ESWeakPointerArray
 {
@@ -110,6 +115,7 @@ static inline void removeObjectAtIndex(ESWeakPointerArray *self, NSUInteger inde
 
 static inline void storeObjectAtIndex(ESWeakPointerArray *self, id object, NSUInteger index)
 {
+	[ESWeakObjectWatcher watcherForObject:object delegate:self];
 	objc_storeWeak(&self->_objects[index], object);
 }
 
@@ -331,8 +337,8 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 	storeObjectAtIndex(self, object, index);
 }
 
-#pragma mark -
-#pragma mark Remove
+#pragma mark - Remove
+
 - (void)removeObjectAtIndex:(NSUInteger)index
 {
 	removeObjectAtIndex(self, index);
@@ -430,6 +436,16 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 	state->mutationsPtr = (unsigned long *)cfSelf;
 	
 	return _strongCount;
+}
+
+#pragma mark - 
+
+- (void)objectDidZero
+{
+	// This almost certainly has thread safety issues
+	// when an array member is dealloced on a thread
+	// other than the one using the array
+	[self removeAllNil];
 }
 
 @end
