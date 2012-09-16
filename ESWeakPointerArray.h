@@ -69,9 +69,5 @@
  * 
  */
 - (NSString *)componentsJoinedByString:(NSString *)separator;
-/**
- * Remove all nil array members
- */
-- (void)removeAllNil;
 
 @end

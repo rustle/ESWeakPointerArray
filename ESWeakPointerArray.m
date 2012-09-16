@@ -53,6 +53,14 @@ void es_moveWeak(uid *to, uid *from)
 if (index >= self->_count) \
 	[NSException raise:NSRangeException format:@"index %ld beyond count %lu", index, self->_count];
 
+#define ValidateRangeWithReturn(index, retVal) \
+if (index >= self->_count) { \
+	[_lock unlock]; \
+	[NSException raise:NSRangeException format:@"index %ld beyond count %lu", index, self->_count]; \
+	return retVal; \
+}
+
+
 @interface ESWeakPointerArray () <ESWeakObjectWatcherDelegate>
 
 @end
@@ -67,6 +75,8 @@ if (index >= self->_count) \
 	bool inFastEnumeration;
 	uid * _strongObjects;
 	NSUInteger _strongCount;
+	// threading
+	NSLock *_lock;
 }
 
 #pragma mark -
@@ -160,47 +170,27 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 		_count = 0;
 		_capacity = numItems;
 		_objects = mallocObjects(_capacity);
+		_lock = [NSLock new];
 	}
 	return self;
 }
 
 - (instancetype)initWithArray:(NSArray *)array
 {
+	return [self initWithArray:array copyItems:NO];
+}
+
+- (instancetype)initWithArray:(NSArray *)array copyItems:(BOOL)flag
+{
 	self = [self initWithCapacity:[array count]];
 	if (self)
 	{
 		for (id object in array)
 		{
-			addObject(self, object);
+			addObject(self, flag ? [object copy] : object);
 		}
 	}
 	return self;
-}
-
-#define MethodNotImplementedException [NSException raise:@"MethodNotImplementedException" format:@"%@ not implemented", NSStringFromSelector(_cmd)]
-
-- (instancetype)initWithArray:(NSArray *)array copyItems:(BOOL)flag
-{
-	MethodNotImplementedException;
-	return nil;
-}
-
-- (instancetype)initWithContentsOfURL:(NSURL *)url
-{
-	MethodNotImplementedException;
-	return nil;
-}
-
-- (instancetype)initWithContentsOfFile:(NSString *)path
-{
-	MethodNotImplementedException;
-	return nil;
-}
-
-- (instancetype)initWithObjects:(const id [])objects count:(NSUInteger)cnt
-{
-	MethodNotImplementedException;
-	return nil;
 }
 
 - (instancetype)initWithObjects:(id)firstObj, ...
@@ -234,6 +224,26 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 	return self;
 }
 
+#define MethodNotImplementedException [NSException raise:@"MethodNotImplementedException" format:@"%@ not implemented", NSStringFromSelector(_cmd)]
+
+- (instancetype)initWithContentsOfURL:(NSURL *)url
+{
+	MethodNotImplementedException;
+	return nil;
+}
+
+- (instancetype)initWithContentsOfFile:(NSString *)path
+{
+	MethodNotImplementedException;
+	return nil;
+}
+
+- (instancetype)initWithObjects:(const id [])objects count:(NSUInteger)cnt
+{
+	MethodNotImplementedException;
+	return nil;
+}
+
 - (void)dealloc
 {
 	freeObjects(_objects);
@@ -254,48 +264,72 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 
 - (__weak id)objectAtIndex:(NSUInteger)index 
 {
-	ValidateRange(index)
-	
-	return objectAtIndex(self, index);
+	[_lock lock];
+	ValidateRangeWithReturn(index, nil);
+	__weak id obj = objectAtIndex(self, index);
+	[_lock unlock];
+	return obj;
 }
 
 - (__weak id)lastObject 
 {
+	[_lock lock];
 	if (_count == 0)
+	{
+		[_lock unlock];
 		return nil;
-	return [self objectAtIndex:_count - 1];
+	}
+	__weak id obj = objectAtIndex(self, _count - 1);
+	[_lock unlock];
+	return obj;
 }
 
 - (NSUInteger)indexOfObject:(__weak id)object
 {
-	return indexOfObject(self, object);
+	[_lock lock];
+	NSUInteger index = indexOfObject(self, object);
+	[_lock unlock];
+	return index;
 }
 
 - (BOOL)containsObject:(__weak id)object
 {
-	return (indexOfObject(self, object) != NSNotFound) ? YES : NO;
+	[_lock lock];
+	BOOL contains = (indexOfObject(self, object) != NSNotFound) ? YES : NO;
+	[_lock unlock];
+	return contains;
 }
 
-#pragma mark -
-#pragma mark 
+#pragma mark - 
+
 - (NSUInteger)count
 {
-	return _count;
+	[_lock lock];
+	NSUInteger count = _count;
+	[_lock unlock];
+	return count;
 }
+
+#pragma mark - Description
 
 - (NSString *)componentsJoinedByString:(NSString *)separator 
 {
-	NSMutableString *string = [NSMutableString stringWithCapacity:256];
-	NSUInteger count = [self count];
-	for (NSUInteger i = 0; i < count; i++)
-	{
-		NSString *description = [[self objectAtIndex:i] description];
-		if (!description)
-			description = @"(null)";
-		[string appendString:description];
-		if (i + 1 < count)
-			[string appendString:separator];
+	[_lock lock];
+	NSMutableString *mutableString = [[NSMutableString alloc] initWithCapacity:256];
+	@autoreleasepool {
+		NSUInteger count = _count;
+		for (NSUInteger i = 0; i < count; i++)
+		{
+			NSString *description = [objectAtIndex(self, i) description];
+			if (!description)
+				description = @"(null)";
+			[mutableString appendString:description];
+			if (i + 1 < count)
+				[mutableString appendString:separator];
+		}
 	}
+	NSString *string = [mutableString copy];
+	[_lock unlock];
 	return string;
 }
 
@@ -308,16 +342,18 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 
 - (void)addObject:(__weak id)object
 {
+	[_lock lock];
 	_count++;
 	if (_count > _capacity)
 		reallocObjects(self, _count * 2);
 	storeObjectAtIndex(self, object, self->_count - 1);
+	[_lock unlock];
 }
 
 - (void)insertObject:(__weak id)object atIndex:(NSUInteger)index
 {
-	ValidateRange(index)
-	
+	[_lock lock];
+	ValidateRangeWithReturn(index, );
 	_count++;
 	if (_count > _capacity)
 		reallocObjects(self, _count * 2);
@@ -329,59 +365,78 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 		}
 	}
 	storeObjectAtIndex(self, object, index);
+	[_lock unlock];
 }
 
 - (void)replaceObjectAtIndex:(NSUInteger)index withObject:object
 {
-	ValidateRange(index)
+	[_lock lock];
+	ValidateRangeWithReturn(index, );
 	storeObjectAtIndex(self, object, index);
+	[_lock unlock];
 }
 
 #pragma mark - Remove
 
 - (void)removeObjectAtIndex:(NSUInteger)index
 {
+	[_lock lock];
 	removeObjectAtIndex(self, index);
+	[_lock unlock];
 }
 
 - (void)removeAllObjects
 {
+	[_lock lock];
 	_count = 0;
-	if (self->_capacity > 8)
+	if (_capacity > 8)
 	{
-		self->_capacity = 8;
-		self->_objects = (uid *)NSZoneRealloc(NULL, self->_objects, sizeof(id) * self->_capacity);
+		_capacity = 8;
+		// Doesn't use reallocObjects() because we don't want to move the weak
+		// objects in the process of reallocing
+		// TODO: would it be worthwhile to nil out the pointers in weak storage?
+		_objects = (uid *)NSZoneRealloc(NULL, _objects, sizeof(id) * _capacity);
 	}
+	[_lock unlock];
 }
 
 - (void)removeAllNil
 {
-	NSInteger count = [self count];
+	[_lock lock];
+	NSInteger count = _count;
 	while (--count >= 0)
 	{
-		id objectAtIndex = [self objectAtIndex:count];
-		if (objectAtIndex == nil)
+		id object = objectAtIndex(self, count);
+		if (object == nil)
 			removeObjectAtIndex(self, count);
 	}
+	[_lock unlock];
 }
 
 - (void)removeLastObject
 {
+	[_lock lock];
 	if (_count == 0)
+	{
+		[_lock unlock];
 		[NSException raise:NSRangeException format:@"index %d beyond count %lu", 1, _count];
-	
+		return;
+	}
 	removeObjectAtIndex(self, _count - 1);
+	[_lock unlock];
 }
 
 - (void)removeObject:(__weak id)object
 {
-	NSInteger count = [self count];
+	[_lock lock];
+	NSInteger count = _count;
 	while (--count >= 0)
 	{
-		id objectAtIndex = [self objectAtIndex:count];
-		if ([objectAtIndex isEqual:object])
+		id storedObject = objectAtIndex(self, count);
+		if ([storedObject isEqual:object])
 			removeObjectAtIndex(self, count);
 	}
+	[_lock unlock];
 }
 
 #pragma mark - Sorting
@@ -393,13 +448,32 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 
 - (void)makeObjectsPerformSelector:(SEL)selector
 {
-	NSUInteger count = [self count];
-	for (NSInteger i = 0; i < count; i++)
-	{
+	[_lock lock];
+	@autoreleasepool {
+		NSUInteger count = _count;
+		for (NSInteger i = 0; i < count; i++)
+		{
 #pragma GCC diagnostic ignored "-Warc-performSelector-leaks"
-		[[self objectAtIndex:i] performSelector:selector];
+			[objectAtIndex(self, i) performSelector:selector];
 #pragma GCC diagnostic warning "-Warc-performSelector-leaks"
+		}
 	}
+	[_lock unlock];
+}
+
+- (void)makeObjectsPerformSelector:(SEL)selector withObject:(id)object
+{
+	[_lock lock];
+	@autoreleasepool {
+		NSUInteger count = _count;
+		for (NSInteger i = 0; i < count; i++)
+		{
+#pragma GCC diagnostic ignored "-Warc-performSelector-leaks"
+			[objectAtIndex(self, i) performSelector:selector withObject:object];
+#pragma GCC diagnostic warning "-Warc-performSelector-leaks"
+		}
+	}
+	[_lock unlock];
 }
 
 #pragma mark - Fast Enumeration
@@ -408,13 +482,16 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 {
 	if (!inFastEnumeration)
 	{
+		[_lock lock];
 		inFastEnumeration = true;
 		_strongObjects = mallocObjects(_count);
-		for (_strongCount = 0; _strongCount < _count; _strongCount++)
-		{
-			__strong id obj = [self objectAtIndex:_strongCount];
-			if (obj)
-				_strongObjects[_strongCount] = (__bridge id)CFBridgingRetain(obj);
+		@autoreleasepool {
+			for (_strongCount = 0; _strongCount < _count; _strongCount++)
+			{
+				__strong id obj = objectAtIndex(self, _strongCount);
+				if (obj)
+					_strongObjects[_strongCount] = (__bridge id)CFBridgingRetain(obj);
+			}
 		}
 	}
 	
@@ -427,6 +504,7 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 		freeObjects(_strongObjects);
 		_strongObjects = nil;
 		inFastEnumeration = false;
+		[_lock unlock];
         return 0;
     }
 	
@@ -442,9 +520,6 @@ static inline NSUInteger indexOfObject(ESWeakPointerArray *self, id object)
 
 - (void)objectDidZero
 {
-	// This almost certainly has thread safety issues
-	// when an array member is dealloced on a thread
-	// other than the one using the array
 	[self removeAllNil];
 }
 
